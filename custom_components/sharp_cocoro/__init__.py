@@ -60,39 +60,6 @@ class SharpCocoroData:
     app_secret: str = field(default="")
     last_login_time: datetime | None = field(default=None)
 
-    async def _request_device_refresh(self, device: Device) -> list[str]:
-        """Request a device to report its current status.
-
-        This sends a control command with empty status array, which triggers
-        the device to report fresh values to the Sharp cloud.
-
-        Returns list of control IDs to monitor for completion.
-        """
-        body = {
-            "controlList": [
-                {
-                    "deviceId": device.device_id,
-                    "echonetNode": device.echonet_node,
-                    "echonetObject": device.echonet_object,
-                    "status": [],  # Empty status triggers a refresh
-                }
-            ]
-        }
-
-        result = await self.cocoro.send_post_request(
-            f"/control/deviceControl?boxId={device.box.boxId}&appSecret={self.cocoro.app_secret}",
-            body,
-        )
-
-        control_ids = []
-        if 'controlList' in result:
-            for control in result['controlList']:
-                if 'id' in control:
-                    control_ids.append(control['id'])
-
-        _LOGGER.debug("Refresh request sent for device %s, control IDs: %s", device.device_id, control_ids)
-        return control_ids
-
     async def async_ensure_authenticated(self) -> bool:
         """Ensure the client is authenticated, re-login if necessary."""
         try:
@@ -149,12 +116,25 @@ class SharpCocoroData:
         import asyncio
 
         # First, request each device to report fresh values
+        # Using execute_queued_updates with empty property_updates sends status: []
+        # which triggers the device to report its current state
         all_control_ids: list[tuple[Device, list[str]]] = []
         for device in self.devices:
             try:
-                control_ids = await self._request_device_refresh(device)
+                # Ensure no pending updates (we just want a refresh)
+                device.property_updates.clear()
+                result = await self.cocoro.execute_queued_updates(device)
+
+                # Extract control IDs from response
+                control_ids = []
+                if 'controlList' in result:
+                    for control in result['controlList']:
+                        if 'id' in control:
+                            control_ids.append(control['id'])
+
                 if control_ids:
                     all_control_ids.append((device, control_ids))
+                    _LOGGER.debug("Refresh request sent for device %s, control IDs: %s", device.device_id, control_ids)
             except Exception as e:
                 _LOGGER.warning("Failed to request refresh for device %s: %s", device.device_id, e)
 
