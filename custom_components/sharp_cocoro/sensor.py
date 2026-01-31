@@ -238,8 +238,10 @@ class SharpCocoroSpecialStatusSensor(SharpCocoroBaseSensor):
             return None
         if isinstance(prop_status, SinglePropertyStatus):
             code = prop_status.valueSingle.get("code")
-            if code is not None:
-                return SPECIAL_STATUS_MAP.get(code, f"Unknown ({code})")
+            if code is None:
+                # null means normal operation (not in any special state)
+                return SPECIAL_STATUS_MAP.get("40", "Normal")
+            return SPECIAL_STATUS_MAP.get(code, f"Unknown ({code})")
         return None
 
 
