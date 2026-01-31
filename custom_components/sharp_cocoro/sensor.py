@@ -25,11 +25,14 @@ if TYPE_CHECKING:
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up the Sharp Cocoro Air fan platform."""
-    cocoro_device = entry.runtime_data
-    assert isinstance(cocoro_device, SharpCocoroData)
+    """Set up the Sharp Cocoro Air sensor platform."""
+    cocoro_data = entry.runtime_data
+    assert isinstance(cocoro_data, SharpCocoroData)
 
-    async_add_entities([SharpCocoroSensor(cocoro_device)])
+    async_add_entities([
+        SharpCocoroSensor(cocoro_data, device_index)
+        for device_index in range(len(cocoro_data.devices))
+    ])
 
 
 class SharpCocoroSensor(SensorEntity):
@@ -41,20 +44,19 @@ class SharpCocoroSensor(SensorEntity):
 
     @property
     def _device(self) -> "Aircon":
-        return self._cocoro_data.device  # type: ignore[return-value]
+        return self._cocoro_data.devices[self._device_index]  # type: ignore[return-value]
 
     @property
     def _cocoro(self) -> Cocoro:
         return self._cocoro_data.cocoro
 
-    def __init__(self, cocoro_device: SharpCocoroData):
-        """Initialize the fan."""
-        self._cocoro_data = cocoro_device
+    def __init__(self, cocoro_data: SharpCocoroData, device_index: int):
+        """Initialize the sensor."""
+        self._cocoro_data = cocoro_data
+        self._device_index = device_index
 
-        # Initialize other necessary attributes
-        # concat device_id and "fan"
-        self.name = self._device.name + " Temperature"
-        self.unique_id = str(self._device.device_id)
+        self._attr_name = f"{self._device.name} Temperature"
+        self._attr_unique_id = f"{self._device.device_id}_temperature"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(self._device.device_id))},
             name=self._device.name,
