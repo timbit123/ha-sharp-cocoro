@@ -60,6 +60,39 @@ class SharpCocoroData:
     app_secret: str = field(default="")
     last_login_time: datetime | None = field(default=None)
 
+    async def _request_device_refresh(self, device: Device) -> list[str]:
+        """Request a device to report its current status.
+
+        This sends a control command with empty status array, which triggers
+        the device to report fresh values to the Sharp cloud.
+
+        Returns list of control IDs to monitor for completion.
+        """
+        body = {
+            "controlList": [
+                {
+                    "deviceId": device.device_id,
+                    "echonetNode": device.echonet_node,
+                    "echonetObject": device.echonet_object,
+                    "status": [],  # Empty status triggers a refresh
+                }
+            ]
+        }
+
+        result = await self.cocoro.send_post_request(
+            f"/control/deviceControl?boxId={device.box.boxId}&appSecret={self.cocoro.app_secret}",
+            body,
+        )
+
+        control_ids = []
+        if 'controlList' in result:
+            for control in result['controlList']:
+                if 'id' in control:
+                    control_ids.append(control['id'])
+
+        _LOGGER.debug("Refresh request sent for device %s, control IDs: %s", device.device_id, control_ids)
+        return control_ids
+
     async def async_ensure_authenticated(self) -> bool:
         """Ensure the client is authenticated, re-login if necessary."""
         try:
@@ -113,6 +146,38 @@ class SharpCocoroData:
 
     async def _do_refresh(self):
         """Perform the actual device refresh."""
+        import asyncio
+
+        # First, request each device to report fresh values
+        all_control_ids: list[tuple[Device, list[str]]] = []
+        for device in self.devices:
+            try:
+                control_ids = await self._request_device_refresh(device)
+                if control_ids:
+                    all_control_ids.append((device, control_ids))
+            except Exception as e:
+                _LOGGER.warning("Failed to request refresh for device %s: %s", device.device_id, e)
+
+        # Wait for all refresh commands to complete (with timeout)
+        if all_control_ids:
+            _LOGGER.debug("Waiting for %d device refresh commands to complete", len(all_control_ids))
+            for device, control_ids in all_control_ids:
+                try:
+                    await self.cocoro.wait_for_control_completion(
+                        device,
+                        control_ids,
+                        timeout=3.0,
+                        poll_interval=0.3
+                    )
+                except TimeoutError:
+                    _LOGGER.debug("Refresh command timed out for device %s, continuing anyway", device.device_id)
+                except Exception as e:
+                    _LOGGER.debug("Error waiting for refresh completion: %s", e)
+
+            # Small delay to ensure cloud has updated values
+            await asyncio.sleep(0.5)
+
+        # Now query the fresh device data
         api_devices = await self.cocoro.query_devices()
         api_device_map = {d.device_id: d for d in api_devices}
 
@@ -174,8 +239,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: CocoroConfigEntry) -> bo
             last_login_time=datetime.now(),
         )
 
-        # Set up periodic device refresh (every 15 seconds)
-        async_track_time_interval(hass, scd.async_refresh_data, timedelta(seconds=15))
+        # Set up periodic device refresh (every 60 seconds)
+        # Note: Each refresh sends a command to the device to report fresh values
+        async_track_time_interval(hass, scd.async_refresh_data, timedelta(seconds=60))
 
         # Set up periodic token refresh (every 30 minutes)
         async def async_refresh_token(_):
